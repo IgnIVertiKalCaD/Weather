@@ -5,6 +5,7 @@ mod config;
 mod render;
 
 use std::env;
+
 mod utils;
 
 use reqwest::{Client, Response};
@@ -14,27 +15,46 @@ use crate::structures::{weather_info::WeatherInfo};
 use crate::structures::config_structure::{City};
 use crate::structures::geocode_structure::RootGeoCodeStruct;
 
+// const  WHITE_BG: Bg<White> = Bg(White);
+// const  WHITE_FG: Fg<White> = Fg(White);
+//
+//
+// const  BLACK_BG: Bg<Black> = Bg(Black);
+// const  BLACK_FG: Fg<Black> = Fg(Black);
+//
+// const  RESET_FG: Fg<Reset> = Fg(Reset);
+// const  RESET_BG: Bg<Reset> = Bg(Reset);
+
+
 #[tokio::main]
 async fn main() {
     let arg: Vec<String> = env::args().collect();
+
     let mut enter_city: String = String::new();
 
-    //
-    // if arg.len() >= 2  {
-    //     if arg[1] == "switch-city" {
-    //        return get_geocode(&enter_city).await;
-    //     }
-    // }
+    if arg.len() >= 2 {
+        if arg[1] == "switch-city" {
+            println!("Enter city: ");
+
+            std::io::stdin().read_line(&mut enter_city).unwrap();
+
+            return get_geocode(&enter_city).await;
+        }
+    }
 
     match read_config() {
         Ok(_) => {
-            get_config();
-            // let cached_city: Json = get_config();
-            //
-            // let lat: f64 = cached_city.find_path(&["city_data", "latitude"]).unwrap().as_f64().unwrap();
-            // let lon: f64 = cached_city.find_path(&["city_data", "longitude"]).unwrap().as_f64().unwrap();
-            //
-            // get_weather(&lat, &lon).await;
+            match get_config() {
+                Ok(json) => {
+                    let cached_city: Json = json;
+
+                    let lat: f64 = cached_city.find_path(&["city_data", "latitude"]).unwrap().as_f64().unwrap();
+                    let lon: f64 = cached_city.find_path(&["city_data", "longitude"]).unwrap().as_f64().unwrap();
+
+                    get_weather(&lat, &lon).await;
+                }
+                Err(_) => {}
+            }
         }
         Err(_) => {
             println!("Enter city: ");
@@ -72,6 +92,8 @@ async fn get_geocode(city: &str) {
 }
 
 async fn choice_city(cities: &RootGeoCodeStruct, search_city: &str) {
+    print!("{}{}", termion::clear::All, termion::cursor::Goto(1, 1));
+
     println!("{} cities have been found for your query.\nSelect the one that matches your query.\n\nExample: 1\n", cities.len());
 
     let mut enter_city: String = String::new();
@@ -89,7 +111,7 @@ async fn choice_city(cities: &RootGeoCodeStruct, search_city: &str) {
     let object_for_config = City {
         city: search_city.to_string(),
         longitude: selected_city.lon.parse().unwrap(),
-        latitude: selected_city.lat.parse().unwrap()
+        latitude: selected_city.lat.parse().unwrap(),
     };
     save_config(object_for_config).expect("Error on save config file");
 
@@ -118,7 +140,7 @@ async fn get_weather(lat: &f64, lon: &f64) {
         other => {
             panic!("Uh oh! Something unexpected happened: {:?}", other);
         }
-    }
+    };
 }
 
 // fn print_type_of<T>(_: &T) {
