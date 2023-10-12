@@ -1,7 +1,11 @@
 use crate::structures::weather_info::WeatherInfo;
 use crate::utils::{unixtime_convertor::time, select_condition::select_condition};
-pub fn render(weather: &WeatherInfo, condition: &String) {
+pub fn render(weather: &WeatherInfo, condition: &String, city: &String) {
     let condition: [&str; 6] = select_condition(condition);
+
+    println!();
+
+    print!("                 City: {}\n", city);
 
     print!("{}", condition[0]);
     print!("Weather: {} \n", weather.fact.condition);

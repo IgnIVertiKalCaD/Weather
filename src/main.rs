@@ -3,70 +3,53 @@ mod patterns;
 mod storage;
 mod config;
 mod render;
-
-use std::env;
-
 mod utils;
+mod dialog;
 
-use reqwest::{Client, Response};
-use rustc_serialize::json::Json;
-use crate::storage::storage_manager::{get_config, read_config, save_config};
+use crate::storage::storage_manager::{add_city, get_config};
 use crate::structures::{weather_info::WeatherInfo};
 use crate::structures::config_structure::{City};
-use crate::structures::geocode_structure::RootGeoCodeStruct;
-
-// const  WHITE_BG: Bg<White> = Bg(White);
-// const  WHITE_FG: Fg<White> = Fg(White);
-//
-//
-// const  BLACK_BG: Bg<Black> = Bg(Black);
-// const  BLACK_FG: Fg<Black> = Fg(Black);
-//
-// const  RESET_FG: Fg<Reset> = Fg(Reset);
-// const  RESET_BG: Bg<Reset> = Bg(Reset);
-
+use crate::structures::geocode_structure::{RootGeoCodeStruct};
+use std::io::{Error, ErrorKind};
+use reqwest::{Client, Response};
+use crate::dialog::dialog::{show_dialog_for_choice_city, show_dialog_for_entering_city};
+use crate::utils::args::args;
 
 #[tokio::main]
 async fn main() {
-    let arg: Vec<String> = env::args().collect();
+    args().await;
 
-    let mut enter_city: String = String::new();
+    match get_config() {
+        Ok(config) => {
+            let mut handles = vec![];
 
-    if arg.len() >= 2 {
-        if arg[1] == "switch-city" {
-            println!("Enter city: ");
-
-            std::io::stdin().read_line(&mut enter_city).unwrap();
-
-            return get_geocode(&enter_city).await;
-        }
-    }
-
-    match read_config() {
-        Ok(_) => {
-            match get_config() {
-                Ok(json) => {
-                    let cached_city: Json = json;
-
-                    let lat: f64 = cached_city.find_path(&["city_data", "latitude"]).unwrap().as_f64().unwrap();
-                    let lon: f64 = cached_city.find_path(&["city_data", "longitude"]).unwrap().as_f64().unwrap();
-
-                    get_weather(&lat, &lon).await;
+            match config.cities.len() {
+                0 => {
+                    let selected_city: City = show_dialog_for_entering_city().await;
+                    add_city(selected_city)
                 }
-                Err(_) => {}
+                _ => {
+                    for city in config.cities {
+                        handles.push(
+                            tokio::spawn(async move {
+                                let weather = get_weather(city.latitude, city.longitude).await.unwrap();
+                                render::render(&weather, &weather.fact.condition, &city.city)
+                            })
+                        )
+                    }
+                    futures::future::join_all(handles).await;
+                }
             }
         }
         Err(_) => {
-            println!("Enter city: ");
-
-            std::io::stdin().read_line(&mut enter_city).unwrap();
-
-            get_geocode(&enter_city).await;
+            let selected_city: City = show_dialog_for_entering_city().await;
+            add_city(selected_city)
         }
     }
 }
 
-async fn get_geocode(city: &str) {
+
+async fn get_geocode(city: &str) -> Result<RootGeoCodeStruct, Error> {
     let url: String = format!("https://geocode.maps.co/search?q={city}");
 
     let http: Client = Client::new();
@@ -76,14 +59,15 @@ async fn get_geocode(city: &str) {
     match response.status() {
         reqwest::StatusCode::OK => {
             match response.json::<RootGeoCodeStruct>().await {
-                Ok(parsed) => {
-                    choice_city(&parsed, &city).await;
+                Ok(parsed) => Ok(parsed),
+                Err(err) => {
+                    println!("Hm, the response didn't match the shape we expected.");
+                    Err(Error::new(ErrorKind::InvalidData, err))
                 }
-                Err(err) => println!("Hm, the response didn't match the shape we expected. {}", err),
-            };
+            }
         }
         reqwest::StatusCode::UNAUTHORIZED => {
-            println!("Need to grab a new token");
+            Err(Error::new(ErrorKind::ConnectionAborted, "Need to grab a new token"))
         }
         other => {
             panic!("Uh oh! Something unexpected happened: {:?}", other);
@@ -91,58 +75,47 @@ async fn get_geocode(city: &str) {
     }
 }
 
-async fn choice_city(cities: &RootGeoCodeStruct, search_city: &str) {
+async fn choice_city(cities: RootGeoCodeStruct, desired_city: &str) -> City {
     print!("{}{}", termion::clear::All, termion::cursor::Goto(1, 1));
 
     println!("{} cities have been found for your query.\nSelect the one that matches your query.\n\nExample: 1\n", cities.len());
 
-    let mut enter_city: String = String::new();
-
     for (i, _city) in cities.iter().enumerate() {
-        println!("[{}] City: {} | Description: {}", i + 1, search_city, cities[i].display_name);
+        print!("[{}] City: {} \n | Description: {}\n", i + 1, desired_city, cities[i].display_name);
     }
 
-    println!("Enter city: ");
+    let selected_city = show_dialog_for_choice_city();
+    let city_data = &cities[selected_city];
 
-    std::io::stdin().read_line(&mut enter_city).unwrap();
-
-    let selected_city = &cities[enter_city.trim().parse::<usize>().expect("Error number") - 1];
-
-    let object_for_config = City {
-        city: search_city.to_string(),
-        longitude: selected_city.lon.parse().unwrap(),
-        latitude: selected_city.lat.parse().unwrap(),
-    };
-    save_config(object_for_config).expect("Error on save config file");
-
-    get_weather(&selected_city.lat.parse::<f64>().unwrap(), &selected_city.lon.parse::<f64>().unwrap()).await;
+    City {
+        city: desired_city.to_string(),
+        longitude: city_data.lon.parse().unwrap(),
+        latitude: city_data.lat.parse().unwrap(),
+    }
 }
 
-async fn get_weather(lat: &f64, lon: &f64) {
+async fn get_weather(lat: f64, lon: f64) -> Result<WeatherInfo, Error> {
     let url: String = format!("https://api.weather.yandex.ru/v2/forecast?lat={lat}&lon={lon}");
 
     let http: Client = Client::new();
 
     let response: Response = http.get(&url).header("X-Yandex-API-Key", config::API_KEY).send().await.unwrap();
 
-    return match response.status() {
+    match response.status() {
         reqwest::StatusCode::OK => {
             match response.json::<WeatherInfo>().await {
-                Ok(parsed) => {
-                    render::render(&parsed, &parsed.fact.condition);
+                Ok(parsed) => Ok(parsed),
+                Err(err) => {
+                    println!("Hm, the response didn't match the shape we expected.");
+                    Err(Error::new(ErrorKind::InvalidData, err))
                 }
-                Err(err) => println!("Hm, the response didn't match the shape we expected. {}", err),
-            };
+            }
         }
         reqwest::StatusCode::UNAUTHORIZED => {
-            println!("Need to grab a new token");
+            Err(Error::new(ErrorKind::ConnectionAborted, "Need to grab a new token"))
         }
         other => {
             panic!("Uh oh! Something unexpected happened: {:?}", other);
         }
-    };
+    }
 }
-
-// fn print_type_of<T>(_: &T) {
-//     println!("{}", std::any::type_name::<T>())
-// }
